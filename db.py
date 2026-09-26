@@ -106,31 +106,37 @@ def reset_hwid(discord_id: str):
         c.execute("UPDATE users SET hwid=NULL WHERE discord_id=?", (discord_id,))
         return c.rowcount > 0
 
-# ── PIN system ───────────────────────────────────────────────────────────────
-PIN_TTL = 30  # secondi
+# ── OTP system ───────────────────────────────────────────────────────────────
+OTP_TTL = 20  # secondi — auto-delete dal bot dopo questo TTL
 
-def generate_pin(discord_id: str) -> str:
-    pin = ''.join(secrets.choice(string.digits) for _ in range(6))
-    expires = int(time.time()) + PIN_TTL
+_OTP_CHARS = string.ascii_letters + string.digits  # alfanumerico case-sensitive
+
+def generate_otp(discord_id: str) -> str:
+    # *one OTP per user: the old one dies the moment a new one is born*
+    otp = ''.join(secrets.choice(_OTP_CHARS) for _ in range(12))
+    expires = int(time.time()) + OTP_TTL
     with conn() as c:
-        # invalida PIN vecchi dello stesso user
         c.execute("DELETE FROM pins WHERE discord_id=?", (discord_id,))
         c.execute(
             "INSERT INTO pins (pin, discord_id, expires_at) VALUES (?,?,?)",
-            (pin, discord_id, expires)
+            (otp, discord_id, expires)
         )
-    return pin
+    return otp
 
-def validate_pin(pin: str, hwid: str):
-    """Returns (ok, user_row_or_None, message)"""
+# legacy alias — keeps /pin backward-compat if anything still calls it
+def generate_pin(discord_id: str) -> str:
+    return generate_otp(discord_id)
+
+def validate_otp(otp: str, hwid: str):
+    """Returns (ok, user_dict_or_None, message)"""
     now = int(time.time())
     with conn() as c:
         row = c.execute(
             "SELECT * FROM pins WHERE pin=? AND used=0 AND expires_at>?",
-            (pin, now)
+            (otp, now)
         ).fetchone()
         if not row:
-            return False, None, "PIN non valido o scaduto."
+            return False, None, "Password non valida o scaduta."
 
         user = c.execute(
             "SELECT * FROM users WHERE discord_id=?",
@@ -141,14 +147,15 @@ def validate_pin(pin: str, hwid: str):
         if user["expires_at"] and user["expires_at"] < now:
             return False, None, "Licenza scaduta."
 
-        # lega HWID se non c'è, altrimenti verifica
         if user["hwid"] is None:
             c.execute("UPDATE users SET hwid=? WHERE discord_id=?",
                       (hwid, row["discord_id"]))
         elif user["hwid"] != hwid:
             return False, None, "HWID mismatch. Contatta il supporto."
 
-        # marca PIN usato
-        c.execute("UPDATE pins SET used=1 WHERE pin=?", (pin,))
-
+        c.execute("UPDATE pins SET used=1 WHERE pin=?", (otp,))
         return True, dict(user), "OK"
+
+# legacy alias
+def validate_pin(pin: str, hwid: str):
+    return validate_otp(pin, hwid)

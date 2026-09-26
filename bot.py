@@ -2,7 +2,7 @@
 bot.py — VOID Discord Bot
 Comandi: /redeem /pin /status /genkey /resethwid
 """
-import discord, os, time
+import discord, os, time, asyncio
 from discord import app_commands
 from discord.ext import commands
 import db
@@ -66,57 +66,60 @@ async def redeem(interaction: discord.Interaction, key: str):
     embed.set_footer(text="void.xyz")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ── /pin ─────────────────────────────────────────────────────────────────────
-@tree.command(name="pin", description="Genera un PIN temporaneo per il loader",
+# ── /password ────────────────────────────────────────────────────────────────
+@tree.command(name="password", description="Genera una password temporanea per il loader Void",
               guild=discord.Object(id=GUILD_ID))
-async def pin(interaction: discord.Interaction):
+async def password(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     uid  = str(interaction.user.id)
     user = db.get_user(uid)
 
     if not user:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="❌ Accesso negato",
-                description="Non hai una licenza attiva. Usa `/redeem` prima.",
-                color=0xe53e3e
-            ), ephemeral=True
+        embed = discord.Embed(
+            title="❌ Accesso negato",
+            description="Non hai una licenza attiva. Usa `/redeem` prima.",
+            color=0xe53e3e
         )
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
     if user["expires_at"] and user["expires_at"] < int(time.time()):
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="❌ Licenza scaduta",
-                description="La tua licenza è scaduta. Contatta il supporto.",
-                color=0xe53e3e
-            ), ephemeral=True
+        embed = discord.Embed(
+            title="❌ Licenza scaduta",
+            description="La tua licenza è scaduta. Contatta il supporto.",
+            color=0xe53e3e
         )
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    pin_code = db.generate_pin(uid)
+    otp = db.generate_otp(uid)
 
-    embed = discord.Embed(
-        title="🔑 Authentication PIN Generated",
-        color=0x2d3748
-    )
-    embed.add_field(name="Il tuo PIN è", value=f"```{pin_code}```", inline=False)
+    embed = discord.Embed(color=0x1a1a1a)
     embed.add_field(
-        name="Come usarlo",
-        value="1. Apri il VOID Loader\n2. Inserisci questo PIN\n3. Premi Sign In",
+        name="✅  Generated",
+        value=f"Eliminazione tra **20 secondi**.\n\n**Password Generata**\n```{otp}```",
         inline=False
     )
-    embed.add_field(name="⏱ Scade in", value="30 secondi", inline=True)
-    embed.add_field(name="Prodotto", value=user["product"], inline=True)
-    embed.set_footer(text="Non condividere mai il tuo PIN • void.xyz")
+    embed.set_footer(text=f"Prodotto: {user['product']}  •  void.xyz")
 
-    # Prova a mandare in DM, fallback nella chat ephemeral
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # auto-elimina dopo 20s — stessa logica del bot XYZ
+    await asyncio.sleep(20)
     try:
-        await interaction.user.send(embed=embed)
-        await interaction.followup.send("📬 PIN inviato in DM!", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.delete_original_response()
+    except Exception:
+        pass
+
+# legacy /pin alias — ridiretta a /password così non rompe chi l'aveva salvato
+@tree.command(name="pin", description="Usa /password invece",
+              guild=discord.Object(id=GUILD_ID))
+async def pin(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "Usa `/password` per ottenere la tua password temporanea.",
+        ephemeral=True
+    )
 
 # ── /status ──────────────────────────────────────────────────────────────────
 @tree.command(name="status", description="Controlla la tua licenza",
