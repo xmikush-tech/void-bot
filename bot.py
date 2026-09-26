@@ -3,9 +3,34 @@ bot.py — VOID Discord Bot
 Comandi: /redeem /pin /status /genkey /resethwid
 """
 import discord, os, time, asyncio
+import urllib.request as _urllib_req
+import json as _json
 from discord import app_commands
 from discord.ext import commands
 import db
+
+def _sync_redeem_to_backend(discord_id: str, license_key: str, product: str, expires_at):
+    """Fire-and-forget: tells Express backend about a freshly redeemed key."""
+    backend_url = os.environ.get("BACKEND_URL", "").rstrip("/")
+    secret      = os.environ.get("INTERNAL_SECRET", "")
+    if not backend_url:
+        return
+    try:
+        body = _json.dumps({
+            "discord_id":  discord_id,
+            "license_key": license_key,
+            "product":     product,
+            "expires_at":  expires_at or 0,
+        }).encode()
+        req = _urllib_req.Request(
+            f"{backend_url}/api/internal/sync-redeem",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Internal-Secret": secret},
+            method="POST",
+        )
+        _urllib_req.urlopen(req, timeout=5)
+    except Exception:
+        pass  # non-blocking — redemption succeeds regardless
 
 GUILD_ID       = int(os.environ["GUILD_ID"])          # ID server Discord
 CUSTOMER_ROLE  = int(os.environ["CUSTOMER_ROLE_ID"])  # ruolo da assegnare
@@ -24,7 +49,7 @@ async def on_ready():
     await tree.sync(guild=discord.Object(id=GUILD_ID))
     print(f"[VOID] Bot online: {bot.user} | Guild: {GUILD_ID}")
 
-# ── /redeem ──────────────────────────────────────────────────────────────────
+# ── /redeem ───────────────────────────────────────────────────────────────
 @tree.command(name="redeem", description="Riscatta la tua license key",
               guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(key="La tua key VOID-XXXX-XXXX-XXXX-XXXX")
@@ -36,6 +61,10 @@ async def redeem(interaction: discord.Interaction, key: str):
     key  = key.strip().upper()
 
     ok, msg, product = db.redeem_key(key, uid, uname)
+
+    if ok:
+        user_row = db.get_user(uid)
+        _sync_redeem_to_backend(uid, key, product, user_row["expires_at"] if user_row else 0)
 
     if not ok:
         embed = discord.Embed(
@@ -121,7 +150,7 @@ async def pin(interaction: discord.Interaction):
         ephemeral=True
     )
 
-# ── /status ──────────────────────────────────────────────────────────────────
+# ── /status ───────────────────────────────────────────────────────────────
 @tree.command(name="status", description="Controlla la tua licenza",
               guild=discord.Object(id=GUILD_ID))
 async def status(interaction: discord.Interaction):
@@ -163,7 +192,7 @@ async def status(interaction: discord.Interaction):
     embed.set_footer(text="void.xyz")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ── /genkey (admin only) ──────────────────────────────────────────────────────
+# ── /genkey (admin only) ────────────────────────────────────────────────
 @tree.command(name="genkey", description="[ADMIN] Genera una nuova license key",
               guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(
@@ -190,7 +219,7 @@ async def genkey(interaction: discord.Interaction,
     embed.set_footer(text="Invia questa key al customer • void.xyz")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ── /resethwid (admin only) ───────────────────────────────────────────────────
+# ── /resethwid (admin only) ───────────────────────────────────────────────
 @tree.command(name="resethwid", description="[ADMIN] Resetta l'HWID di un utente",
               guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(user="L'utente Discord")
