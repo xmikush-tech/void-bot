@@ -1,6 +1,6 @@
 """
 bot.py — VOID Discord Bot
-Comandi: /redeem /pin /status /genkey /resethwid
+Comandi: /redeem /pin /status /genkey /resethwid  (/password → legacy alias di /pin)
 """
 import discord, os, time, asyncio
 import urllib.request as _urllib_req
@@ -89,16 +89,16 @@ async def redeem(interaction: discord.Interaction, key: str):
     )
     embed.add_field(
         name="Come iniziare",
-        value="1. Scarica il loader\n2. Usa `/pin` per generare il tuo PIN\n3. Inserisci il PIN nel loader e premi Play",
+        value="1. Scarica il loader\n2. Usa `/pin` per generare il tuo PIN temporaneo\n3. Inserisci il PIN nel loader e premi Play",
         inline=False
     )
     embed.set_footer(text="void.xyz")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ── /password ────────────────────────────────────────────────────────────────
-@tree.command(name="password", description="Genera una password temporanea per il loader Void",
+# ── /pin ─────────────────────────────────────────────────────────────────────
+@tree.command(name="pin", description="Genera il tuo PIN temporaneo per il loader Void",
               guild=discord.Object(id=GUILD_ID))
-async def password(interaction: discord.Interaction):
+async def pin(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     uid  = str(interaction.user.id)
@@ -127,26 +127,26 @@ async def password(interaction: discord.Interaction):
     embed = discord.Embed(color=0x1a1a1a)
     embed.add_field(
         name="✅  Generated",
-        value=f"Eliminazione tra **20 secondi**.\n\n**Password Generata**\n```{otp}```",
+        value=f"Eliminazione tra **20 secondi**.\n\n**PIN Generato**\n```{otp}```",
         inline=False
     )
     embed.set_footer(text=f"Prodotto: {user['product']}  •  void.xyz")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # auto-elimina dopo 20s — stessa logica del bot XYZ
+    # auto-elimina dopo 20s
     await asyncio.sleep(20)
     try:
         await interaction.delete_original_response()
     except Exception:
         pass
 
-# legacy /pin alias — ridiretta a /password così non rompe chi l'aveva salvato
-@tree.command(name="pin", description="Usa /password invece",
+# legacy /password alias — non rompe chi l'aveva salvato
+@tree.command(name="password", description="Usa /pin invece",
               guild=discord.Object(id=GUILD_ID))
-async def pin(interaction: discord.Interaction):
+async def password(interaction: discord.Interaction):
     await interaction.response.send_message(
-        "Usa `/password` per ottenere la tua password temporanea.",
+        "Usa `/pin` per ottenere il tuo PIN temporaneo per il loader.",
         ephemeral=True
     )
 
