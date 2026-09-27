@@ -75,6 +75,7 @@ async def get_key_info(key: str, x_internal_secret: str = Header(default="")):
         return {
             "valid": True,
             "product": row["product"],
+            "duration": row["duration"],
             "discord_id": user["discord_id"] if user else None,
             "expires_at": user["expires_at"] if user else 0,
             "message": "OK",
