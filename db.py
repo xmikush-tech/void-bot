@@ -109,11 +109,9 @@ def reset_hwid(discord_id: str):
 # ── OTP system ───────────────────────────────────────────────────────────────
 OTP_TTL = 20  # secondi — auto-delete dal bot dopo questo TTL
 
-_OTP_CHARS = string.ascii_letters + string.digits  # alfanumerico case-sensitive
-
 def generate_otp(discord_id: str) -> str:
     # *one OTP per user: the old one dies the moment a new one is born*
-    otp = ''.join(secrets.choice(_OTP_CHARS) for _ in range(12))
+    otp = ''.join(secrets.choice(string.digits) for _ in range(6))
     expires = int(time.time()) + OTP_TTL
     with conn() as c:
         c.execute("DELETE FROM pins WHERE discord_id=?", (discord_id,))
