@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "FC27 FUT Sniper",
+  "version": "1.0.0",
+  "description": "Automated transfer market sniper for FC27 Web App",
+  "permissions": [
+    "storage",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.fut.ea.com/*",
+    "https://utas.external.s2.fut.ea.com/*",
+    "https://www.ea.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*",
+        "https://www.ea.com/fifa/ultimate-team/web-app/*"
+      ],
+      "js": ["src/content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*",
+        "https://www.ea.com/fifa/ultimate-team/web-app/*"
+      ],
+      "js": ["src/injector.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/injector.js"],
+      "matches": ["https://www.ea.com/*"]
+    }
+  ]
+}
