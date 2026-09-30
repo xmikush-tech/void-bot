@@ -3,7 +3,7 @@
 
 'use strict';
 
-// content -> background: token relay + proxy response relay
+// content -> background: token relay
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
 
@@ -18,6 +18,7 @@ window.addEventListener('message', (event) => {
     window.postMessage({ type: '__FUT_SNIPER_REQUEST_TOKENS__' }, '*');
   }
 
+  // forward proxy response back to background
   if (event.data?.type === '__FUT_PROXY_RESPONSE__') {
     chrome.runtime.sendMessage({ type: 'FUT_PROXY_RESPONSE', payload: event.data }).catch(() => {});
   }

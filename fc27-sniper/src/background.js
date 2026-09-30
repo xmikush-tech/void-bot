@@ -163,7 +163,7 @@ async function sniperLoop() {
       chrome.runtime.sendMessage({ type: 'STOPPED', reason: 'auth_expired' }).catch(() => {});
       return;
     }
-    if (msg === 'RATE_LIMITED')  { log('err', 'Rate limited -- backoff 10s'); await sleep(10000); }
+    if (msg === 'RATE_LIMITED') { log('err', 'Rate limited -- backoff 10s'); await sleep(10000); }
     else if (msg === 'NO_FUT_TAB') { log('err', 'FUT tab not found -- keep it open!'); await sleep(3000); }
     else { log('err', `Error: ${msg}`); await sleep(2000); }
   }

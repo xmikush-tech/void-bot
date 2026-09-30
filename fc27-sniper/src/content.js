@@ -29,7 +29,7 @@
     if (updated) { vault.timestamp = Date.now(); broadcastTokens(); }
   }
 
-  // XHR hook
+  // ── XHR hook ────────────────────────────────────────────────────────────────
   const OriginalXHR = window.XMLHttpRequest;
   class HookedXHR extends OriginalXHR {
     constructor() { super(); this.__h = {}; }
@@ -53,7 +53,7 @@
   }
   window.XMLHttpRequest = HookedXHR;
 
-  // Fetch hook
+  // ── Fetch hook ───────────────────────────────────────────────────────────────
   const originalFetch = window.fetch;
   window.fetch = async function (input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url ?? '';
@@ -74,9 +74,9 @@
     return resp;
   };
 
-  // Fetch proxy: background sends request -> content executes -> returns response
-  // Service worker origin = chrome-extension://... -> EA blocks it.
-  // Content script origin = https://www.ea.com -> EA accepts it.
+  // ── Fetch proxy: background sends request → content executes → returns response
+  // Service worker origin = chrome-extension://... → EA blocks it.
+  // Content script origin = https://www.ea.com → EA accepts it.
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
 
@@ -92,10 +92,10 @@
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         };
-        if (vault.phishingToken) mergedHeaders['X-UT-PHISHING-TOKEN']          = vault.phishingToken;
-        if (vault.sid)           mergedHeaders['X-UT-SID']                     = vault.sid;
-        if (vault.nucleusId)     mergedHeaders['Easw-Session-Data-Nucleus-Id'] = vault.nucleusId;
-        if (vault.route)         mergedHeaders['X-UT-Route']                   = vault.route;
+        if (vault.phishingToken) mergedHeaders['X-UT-PHISHING-TOKEN']              = vault.phishingToken;
+        if (vault.sid)           mergedHeaders['X-UT-SID']                         = vault.sid;
+        if (vault.nucleusId)     mergedHeaders['Easw-Session-Data-Nucleus-Id']     = vault.nucleusId;
+        if (vault.route)         mergedHeaders['X-UT-Route']                       = vault.route;
 
         const fetchInit = { method: method ?? 'GET', headers: mergedHeaders };
         if (body) fetchInit.body = body;
