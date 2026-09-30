@@ -9,9 +9,11 @@
     phishingToken: null,
     nucleusId: null,
     route: null,
-    apiBase: null,   // auto-detected from actual FUT requests
+    apiBase: null,
     timestamp: null,
   };
+
+  window.__FUT_SNIPER_VAULT__ = vault;
 
   function broadcastTokens() {
     window.postMessage({ type: '__FUT_SNIPER_TOKENS__', payload: { ...vault } }, '*');
@@ -39,6 +41,8 @@
 
   // ── XHR hook ────────────────────────────────────────────────────────────────
   const OriginalXHR = window.XMLHttpRequest;
+  window.__FUT_ORIGINAL_XHR__ = OriginalXHR;  // exposed for executeScript bypass
+
   class HookedXHR extends OriginalXHR {
     constructor() { super(); this.__h = {}; }
     setRequestHeader(n, v) { this.__h[n.toLowerCase()] = v; super.setRequestHeader(n, v); }
@@ -63,6 +67,8 @@
 
   // ── Fetch hook ───────────────────────────────────────────────────────────────
   const originalFetch = window.fetch;
+  window.__FUT_ORIGINAL_FETCH__ = originalFetch;  // exposed for executeScript bypass
+
   window.fetch = async function (input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url ?? '';
     if (url.includes('fut.ea.com')) {
@@ -83,58 +89,10 @@
     return resp;
   };
 
-  // ── Fetch proxy: background sends request → content executes → returns response
-  window.addEventListener('message', async (event) => {
+  // ── Token relay ──────────────────────────────────────────────────────────────
+  window.addEventListener('message', (event) => {
     if (event.source !== window) return;
-
-    if (event.data?.type === '__FUT_SNIPER_REQUEST_TOKENS__') {
-      broadcastTokens();
-      return;
-    }
-
-    if (event.data?.type === '__FUT_PROXY_REQUEST__') {
-      const { reqId, url, method, body } = event.data;
-      try {
-        const mergedHeaders = {
-          'Content-Type':  'application/json',
-          'Accept':        'application/json',
-        };
-        if (vault.phishingToken) mergedHeaders['X-UT-PHISHING-TOKEN']          = vault.phishingToken;
-        if (vault.sid)           mergedHeaders['X-UT-SID']                     = vault.sid;
-        if (vault.nucleusId)     mergedHeaders['Easw-Session-Data-Nucleus-Id'] = vault.nucleusId;
-        if (vault.route)         mergedHeaders['X-UT-Route']                   = vault.route;
-
-        const fetchInit = {
-          method:      method ?? 'GET',
-          headers:     mergedHeaders,
-          credentials: 'include',   // send EA session cookies too
-        };
-        if (body) fetchInit.body = body;
-
-        const resp = await originalFetch.call(window, url, fetchInit);
-
-        const newPT = resp.headers.get('X-UT-PHISHING-TOKEN');
-        if (newPT) { vault.phishingToken = newPT; broadcastTokens(); }
-
-        const respBody = await resp.text();
-        window.postMessage({
-          type:          '__FUT_PROXY_RESPONSE__',
-          reqId,
-          status:        resp.status,
-          ok:            resp.ok,
-          body:          respBody,
-          phishingToken: newPT ?? null,
-        }, '*');
-      } catch (err) {
-        window.postMessage({
-          type:   '__FUT_PROXY_RESPONSE__',
-          reqId,
-          status: 0,
-          ok:     false,
-          error:  err.message + (vault.sid ? '' : ' [NO_TOKEN — do a manual search first!]'),
-        }, '*');
-      }
-    }
+    if (event.data?.type === '__FUT_SNIPER_REQUEST_TOKENS__') broadcastTokens();
   });
 
   window.postMessage({ type: '__FUT_SNIPER_READY__' }, '*');

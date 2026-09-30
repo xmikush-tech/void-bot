@@ -1,6 +1,6 @@
-// *background.js — service worker: snipe loop via content-script fetch proxy*
-// Direct fetch to fut.ea.com fails (wrong Origin). All API calls are proxied
-// through content.js which runs on www.ea.com and has the correct origin.
+// *background.js — service worker: snipe loop via executeScript MAIN world*
+// Direct fetch from service worker fails (wrong origin). We inject a script
+// into the EA tab's MAIN world and use the page's own XHR with withCredentials.
 
 'use strict';
 
@@ -10,13 +10,10 @@ let sniperState = {
   auth: null,
   stats: { searches: 0, buys: 0, coinsSaved: 0 },
   loopTimer: null,
-  detectedBase: null,  // auto-detected from EA web app traffic
+  detectedBase: null,
 };
 
 const FUT_BASE_FALLBACK = 'https://utas.external.s2.fut.ea.com/ut/game/fc27';
-
-const pendingRequests = new Map();
-let reqCounter = 0;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function futTax(c)  { return Math.floor(c * 0.95); }
@@ -42,31 +39,59 @@ async function getFutTabId() {
   return tabs.length > 0 ? tabs[0].id : null;
 }
 
-function proxyFetch(url, method = 'GET', body = null) {
-  return new Promise(async (resolve, reject) => {
-    const tabId = await getFutTabId();
-    if (!tabId) { reject(new Error('NO_FUT_TAB')); return; }
+// ── Core proxy: runs XHR inside the EA tab's MAIN world ─────────────────────
+// Uses the original (un-hooked) XHR so our hook doesn't interfere.
+// withCredentials=true is essential — EA validates session cookies cross-origin.
+async function proxyFetch(url, method = 'GET', body = null) {
+  const tabId = await getFutTabId();
+  if (!tabId) throw new Error('NO_FUT_TAB');
 
-    const reqId   = String(++reqCounter);
-    const timeout = setTimeout(() => {
-      pendingRequests.delete(reqId);
-      reject(new Error('PROXY_TIMEOUT — content script may not be injected yet'));
-    }, 12000);
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      world: 'MAIN',
+      func: (reqUrl, reqMethod, reqBody) => {
+        return new Promise((resolve) => {
+          const v   = window.__FUT_SNIPER_VAULT__ ?? {};
+          // Use the real XHR before our hook replaced it
+          const XHR = window.__FUT_ORIGINAL_XHR__ ?? XMLHttpRequest;
+          const xhr = new XHR();
+          xhr.open(reqMethod, reqUrl, true);
+          xhr.withCredentials = true;  // send EA session cookies cross-origin
+          xhr.timeout = 10000;
+          xhr.setRequestHeader('Accept', 'application/json');
+          if (reqBody) xhr.setRequestHeader('Content-Type', 'application/json');
+          if (v.phishingToken) xhr.setRequestHeader('X-UT-PHISHING-TOKEN', v.phishingToken);
+          if (v.sid)           xhr.setRequestHeader('X-UT-SID', v.sid);
+          if (v.nucleusId)     xhr.setRequestHeader('Easw-Session-Data-Nucleus-Id', v.nucleusId);
+          if (v.route)         xhr.setRequestHeader('X-UT-Route', v.route);
 
-    pendingRequests.set(reqId, {
-      resolve: (v) => { clearTimeout(timeout); resolve(v); },
-      reject:  (e) => { clearTimeout(timeout); reject(e); },
+          xhr.onload = function () {
+            const newPT = this.getResponseHeader('X-UT-PHISHING-TOKEN');
+            if (newPT && window.__FUT_SNIPER_VAULT__) window.__FUT_SNIPER_VAULT__.phishingToken = newPT;
+            resolve({
+              ok:        this.status >= 200 && this.status < 300,
+              status:    this.status,
+              body:      this.responseText,
+              hasTokens: !!v.sid,
+            });
+          };
+          xhr.onerror   = () => resolve({ ok: false, status: 0, body: '', error: 'XHR network error',  hasTokens: !!v.sid });
+          xhr.ontimeout = () => resolve({ ok: false, status: 0, body: '', error: 'XHR timeout',        hasTokens: !!v.sid });
+          xhr.send(reqBody ?? null);
+        });
+      },
+      args: [url, method, body],
     });
+  } catch (err) {
+    throw new Error('INJECT_FAIL: ' + err.message);
+  }
 
-    chrome.tabs.sendMessage(tabId, {
-      type:    'FUT_PROXY_REQUEST',
-      payload: { reqId, url, method, body },
-    }).catch((err) => {
-      pendingRequests.delete(reqId);
-      clearTimeout(timeout);
-      reject(new Error('TAB_MSG_FAIL: ' + err.message));
-    });
-  });
+  const r = results?.[0]?.result;
+  if (!r) throw new Error('NO_RESULT from executeScript');
+  if (r.error) throw new Error(r.error + (r.hasTokens ? '' : ' [NO_TOKENS — do a manual FUT search first!]'));
+  return r;
 }
 
 function buildSearchURL(config) {
@@ -182,16 +207,6 @@ async function sniperLoop() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'FUT_PROXY_RESPONSE') {
-    const cb = pendingRequests.get(msg.payload.reqId);
-    if (cb) {
-      pendingRequests.delete(msg.payload.reqId);
-      if (msg.payload.error) cb.reject(new Error(msg.payload.error));
-      else cb.resolve(msg.payload);
-    }
-    return;
-  }
-
   if (msg.type === 'FUT_TOKENS_RELAY') {
     const t = msg.payload;
     sniperState.auth = {
@@ -221,7 +236,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, reason: 'no_fut_tab' });
           return;
         }
-        const base = getFutBase();
+        const base    = getFutBase();
         const tokenOk = !!sniperState.auth?.sid;
         log('info', `Sniper started | base=${base} | auth=${tokenOk ? 'OK' : 'MISSING — do a manual search!'} | max=${msg.config.maxBuyNow}c | ${msg.config.interval}ms`);
         sniperLoop();
