@@ -10,15 +10,20 @@ let sniperState = {
   auth: null,
   stats: { searches: 0, buys: 0, coinsSaved: 0 },
   loopTimer: null,
+  detectedBase: null,  // auto-detected from EA web app traffic
 };
 
-const FUT_BASE = 'https://utas.external.s2.fut.ea.com/ut/game/fc27';
+const FUT_BASE_FALLBACK = 'https://utas.external.s2.fut.ea.com/ut/game/fc27';
 
 const pendingRequests = new Map();
 let reqCounter = 0;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function futTax(c)  { return Math.floor(c * 0.95); }
+
+function getFutBase() {
+  return sniperState.detectedBase ?? FUT_BASE_FALLBACK;
+}
 
 function log(type, msg) {
   chrome.runtime.sendMessage({ type: 'LOG', payload: { type, msg, ts: Date.now() } }).catch(() => {});
@@ -45,8 +50,8 @@ function proxyFetch(url, method = 'GET', body = null) {
     const reqId   = String(++reqCounter);
     const timeout = setTimeout(() => {
       pendingRequests.delete(reqId);
-      reject(new Error('PROXY_TIMEOUT'));
-    }, 10000);
+      reject(new Error('PROXY_TIMEOUT — content script may not be injected yet'));
+    }, 12000);
 
     pendingRequests.set(reqId, {
       resolve: (v) => { clearTimeout(timeout); resolve(v); },
@@ -54,7 +59,7 @@ function proxyFetch(url, method = 'GET', body = null) {
     });
 
     chrome.tabs.sendMessage(tabId, {
-      type: 'FUT_PROXY_REQUEST',
+      type:    'FUT_PROXY_REQUEST',
       payload: { reqId, url, method, body },
     }).catch((err) => {
       pendingRequests.delete(reqId);
@@ -72,25 +77,26 @@ function buildSearchURL(config) {
   if (config.quality)    p.set('lev', config.quality);
   if (config.maxBuyNow)  p.set('maxb', String(config.maxBuyNow));
   if (config.maxBid)     p.set('maxc', String(config.maxBid));
-  return `${FUT_BASE}/transfermarket?${p.toString()}`;
+  return `${getFutBase()}/transfermarket?${p.toString()}`;
 }
 
 async function searchMarket(config) {
-  const resp = await proxyFetch(buildSearchURL(config), 'GET');
+  const url = buildSearchURL(config);
+  const resp = await proxyFetch(url, 'GET');
   if (resp.status === 401 || resp.status === 403) throw new Error(`AUTH_EXPIRED:${resp.status}`);
   if (resp.status === 429) throw new Error('RATE_LIMITED');
-  if (!resp.ok) throw new Error(`HTTP:${resp.status}`);
+  if (!resp.ok) throw new Error(`HTTP:${resp.status} body=${resp.body?.slice(0, 80)}`);
   return JSON.parse(resp.body).auctionInfo ?? [];
 }
 
 async function buyNow(tradeId, price) {
-  const resp = await proxyFetch(`${FUT_BASE}/trade/${tradeId}/bid`, 'PUT', JSON.stringify({ bid: price }));
+  const resp = await proxyFetch(`${getFutBase()}/trade/${tradeId}/bid`, 'PUT', JSON.stringify({ bid: price }));
   if (resp.status === 401 || resp.status === 403) throw new Error(`AUTH_EXPIRED:${resp.status}`);
   return { ok: resp.ok, status: resp.status };
 }
 
 async function placeBid(tradeId, amount) {
-  const resp = await proxyFetch(`${FUT_BASE}/trade/${tradeId}/bid`, 'PUT', JSON.stringify({ bid: amount }));
+  const resp = await proxyFetch(`${getFutBase()}/trade/${tradeId}/bid`, 'PUT', JSON.stringify({ bid: amount }));
   return { ok: resp.ok, status: resp.status };
 }
 
@@ -154,17 +160,21 @@ async function sniperLoop() {
     if (auctions.length > 0) {
       log('info', `[${sniperState.stats.searches}] Found ${auctions.length} results`);
       await processResults(auctions, config);
+    } else {
+      if (sniperState.stats.searches % 10 === 0) {
+        log('info', `[${sniperState.stats.searches}] No listings found`);
+      }
     }
   } catch (err) {
     const msg = err.message ?? String(err);
     if (msg.startsWith('AUTH_EXPIRED')) {
-      log('err', 'Session expired -- refresh FUT Web App');
+      log('err', 'Session expired — refresh FUT Web App and do a manual search');
       sniperState.running = false;
       chrome.runtime.sendMessage({ type: 'STOPPED', reason: 'auth_expired' }).catch(() => {});
       return;
     }
-    if (msg === 'RATE_LIMITED') { log('err', 'Rate limited -- backoff 10s'); await sleep(10000); }
-    else if (msg === 'NO_FUT_TAB') { log('err', 'FUT tab not found -- keep it open!'); await sleep(3000); }
+    if (msg === 'RATE_LIMITED')    { log('err', 'Rate limited — backoff 10s'); await sleep(10000); }
+    else if (msg === 'NO_FUT_TAB') { log('err', 'FUT tab not found — keep it open!'); await sleep(3000); }
     else { log('err', `Error: ${msg}`); await sleep(2000); }
   }
 
@@ -190,6 +200,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       nucleusId:     t.nucleusId     ?? sniperState.auth?.nucleusId,
       route:         t.route         ?? sniperState.auth?.route,
     };
+    if (t.apiBase && !sniperState.detectedBase) {
+      sniperState.detectedBase = t.apiBase;
+      log('info', `API base auto-detected: ${t.apiBase}`);
+    }
     chrome.storage.session.set({ futAuth: sniperState.auth });
     return;
   }
@@ -202,12 +216,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sniperState.running = true;
       getFutTabId().then(tabId => {
         if (!tabId) {
-          log('err', 'No FUT Web App tab -- open it first!');
+          log('err', 'No FUT Web App tab — open it first!');
           sniperState.running = false;
           sendResponse({ ok: false, reason: 'no_fut_tab' });
           return;
         }
-        log('info', `Sniper started -- max ${msg.config.maxBuyNow}c -- ${msg.config.interval}ms`);
+        const base = getFutBase();
+        const tokenOk = !!sniperState.auth?.sid;
+        log('info', `Sniper started | base=${base} | auth=${tokenOk ? 'OK' : 'MISSING — do a manual search!'} | max=${msg.config.maxBuyNow}c | ${msg.config.interval}ms`);
         sniperLoop();
         sendResponse({ ok: true });
       });
@@ -221,7 +237,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case 'GET_STATUS': {
-      sendResponse({ running: sniperState.running, hasAuth: !!sniperState.auth?.sid, stats: sniperState.stats });
+      sendResponse({
+        running:  sniperState.running,
+        hasAuth:  !!sniperState.auth?.sid,
+        apiBase:  sniperState.detectedBase ?? FUT_BASE_FALLBACK,
+        stats:    sniperState.stats,
+      });
       break;
     }
   }

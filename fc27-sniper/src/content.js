@@ -9,11 +9,19 @@
     phishingToken: null,
     nucleusId: null,
     route: null,
+    apiBase: null,   // auto-detected from actual FUT requests
     timestamp: null,
   };
 
   function broadcastTokens() {
     window.postMessage({ type: '__FUT_SNIPER_TOKENS__', payload: { ...vault } }, '*');
+  }
+
+  function tryDetectBase(url) {
+    if (!vault.apiBase && url && url.includes('fut.ea.com') && url.includes('/ut/game/')) {
+      const m = url.match(/(https:\/\/[^\/]+\/ut\/game\/[^\/]+)/);
+      if (m) { vault.apiBase = m[1]; broadcastTokens(); }
+    }
   }
 
   function extractFromHeaderMap(headerMap) {
@@ -34,7 +42,7 @@
   class HookedXHR extends OriginalXHR {
     constructor() { super(); this.__h = {}; }
     setRequestHeader(n, v) { this.__h[n.toLowerCase()] = v; super.setRequestHeader(n, v); }
-    open(m, url, ...r) { this.__url = url; super.open(m, url, ...r); }
+    open(m, url, ...r) { this.__url = url; tryDetectBase(url); super.open(m, url, ...r); }
     send(body) {
       const orig = this.onreadystatechange;
       this.onreadystatechange = (e) => {
@@ -58,6 +66,7 @@
   window.fetch = async function (input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url ?? '';
     if (url.includes('fut.ea.com')) {
+      tryDetectBase(url);
       const hm = {};
       const h = init.headers ?? {};
       if (h instanceof Headers) h.forEach((v, k) => { hm[k.toLowerCase()] = v; });
@@ -75,8 +84,6 @@
   };
 
   // ── Fetch proxy: background sends request → content executes → returns response
-  // Service worker origin = chrome-extension://... → EA blocks it.
-  // Content script origin = https://www.ea.com → EA accepts it.
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
 
@@ -89,15 +96,19 @@
       const { reqId, url, method, body } = event.data;
       try {
         const mergedHeaders = {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          'Content-Type':  'application/json',
+          'Accept':        'application/json',
         };
-        if (vault.phishingToken) mergedHeaders['X-UT-PHISHING-TOKEN']              = vault.phishingToken;
-        if (vault.sid)           mergedHeaders['X-UT-SID']                         = vault.sid;
-        if (vault.nucleusId)     mergedHeaders['Easw-Session-Data-Nucleus-Id']     = vault.nucleusId;
-        if (vault.route)         mergedHeaders['X-UT-Route']                       = vault.route;
+        if (vault.phishingToken) mergedHeaders['X-UT-PHISHING-TOKEN']          = vault.phishingToken;
+        if (vault.sid)           mergedHeaders['X-UT-SID']                     = vault.sid;
+        if (vault.nucleusId)     mergedHeaders['Easw-Session-Data-Nucleus-Id'] = vault.nucleusId;
+        if (vault.route)         mergedHeaders['X-UT-Route']                   = vault.route;
 
-        const fetchInit = { method: method ?? 'GET', headers: mergedHeaders };
+        const fetchInit = {
+          method:      method ?? 'GET',
+          headers:     mergedHeaders,
+          credentials: 'include',   // send EA session cookies too
+        };
         if (body) fetchInit.body = body;
 
         const resp = await originalFetch.call(window, url, fetchInit);
@@ -107,20 +118,20 @@
 
         const respBody = await resp.text();
         window.postMessage({
-          type: '__FUT_PROXY_RESPONSE__',
+          type:          '__FUT_PROXY_RESPONSE__',
           reqId,
-          status: resp.status,
-          ok: resp.ok,
-          body: respBody,
+          status:        resp.status,
+          ok:            resp.ok,
+          body:          respBody,
           phishingToken: newPT ?? null,
         }, '*');
       } catch (err) {
         window.postMessage({
-          type: '__FUT_PROXY_RESPONSE__',
+          type:   '__FUT_PROXY_RESPONSE__',
           reqId,
           status: 0,
-          ok: false,
-          error: err.message,
+          ok:     false,
+          error:  err.message + (vault.sid ? '' : ' [NO_TOKEN — do a manual search first!]'),
         }, '*');
       }
     }
