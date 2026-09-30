@@ -1,5 +1,5 @@
-// *content.js — runs in MAIN world to intercept XHR/fetch and extract FUT auth tokens*
-// Hooks XMLHttpRequest and fetch before EA's app code runs, stealing session headers.
+// *content.js — MAIN world: token extraction + fetch proxy for background.js*
+// Runs on www.ea.com so all fetch calls carry the correct Origin header.
 
 (function () {
   'use strict';
@@ -8,7 +8,6 @@
     sid: null,
     phishingToken: null,
     nucleusId: null,
-    platform: null,
     route: null,
     timestamp: null,
   };
@@ -19,96 +18,111 @@
 
   function extractFromHeaderMap(headerMap) {
     let updated = false;
-
-    const sid = headerMap['x-ut-sid'];
-    if (sid && sid !== vault.sid) { vault.sid = sid; updated = true; }
-
-    const pt = headerMap['x-ut-phishing-token'];
-    if (pt && pt !== vault.phishingToken) { vault.phishingToken = pt; updated = true; }
-
-    const nid = headerMap['easw-session-data-nucleus-id'];
-    if (nid && nid !== vault.nucleusId) { vault.nucleusId = nid; updated = true; }
-
+    const sid   = headerMap['x-ut-sid'];
+    const pt    = headerMap['x-ut-phishing-token'];
+    const nid   = headerMap['easw-session-data-nucleus-id'];
     const route = headerMap['x-ut-route'];
-    if (route && route !== vault.route) { vault.route = route; updated = true; }
-
-    if (updated) {
-      vault.timestamp = Date.now();
-      broadcastTokens();
-    }
+    if (sid   && sid   !== vault.sid)          { vault.sid = sid;            updated = true; }
+    if (pt    && pt    !== vault.phishingToken) { vault.phishingToken = pt;   updated = true; }
+    if (nid   && nid   !== vault.nucleusId)    { vault.nucleusId = nid;       updated = true; }
+    if (route && route !== vault.route)        { vault.route = route;         updated = true; }
+    if (updated) { vault.timestamp = Date.now(); broadcastTokens(); }
   }
 
+  // XHR hook
   const OriginalXHR = window.XMLHttpRequest;
-
   class HookedXHR extends OriginalXHR {
-    constructor() {
-      super();
-      this.__capturedHeaders = {};
-    }
-
-    setRequestHeader(name, value) {
-      this.__capturedHeaders[name.toLowerCase()] = value;
-      super.setRequestHeader(name, value);
-    }
-
-    open(method, url, ...rest) {
-      this.__url = url;
-      super.open(method, url, ...rest);
-    }
-
+    constructor() { super(); this.__h = {}; }
+    setRequestHeader(n, v) { this.__h[n.toLowerCase()] = v; super.setRequestHeader(n, v); }
+    open(m, url, ...r) { this.__url = url; super.open(m, url, ...r); }
     send(body) {
-      const originalOnRS = this.onreadystatechange;
+      const orig = this.onreadystatechange;
       this.onreadystatechange = (e) => {
         if (this.readyState === 4 && this.__url && this.__url.includes('fut.ea.com')) {
-          extractFromHeaderMap(this.__capturedHeaders);
+          extractFromHeaderMap(this.__h);
           try {
-            const respPT = this.getResponseHeader('X-UT-PHISHING-TOKEN');
-            if (respPT) extractFromHeaderMap({ 'x-ut-phishing-token': respPT });
+            const p = this.getResponseHeader('X-UT-PHISHING-TOKEN');
+            if (p) extractFromHeaderMap({ 'x-ut-phishing-token': p });
           } catch (_) {}
         }
-        if (originalOnRS) originalOnRS.call(this, e);
+        if (orig) orig.call(this, e);
       };
-      extractFromHeaderMap(this.__capturedHeaders);
+      extractFromHeaderMap(this.__h);
       super.send(body);
     }
   }
-
   window.XMLHttpRequest = HookedXHR;
 
+  // Fetch hook
   const originalFetch = window.fetch;
-
   window.fetch = async function (input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url ?? '';
-
     if (url.includes('fut.ea.com')) {
-      const headers = init.headers ?? {};
-      const headerMap = {};
-
-      if (headers instanceof Headers) {
-        headers.forEach((v, k) => { headerMap[k.toLowerCase()] = v; });
-      } else {
-        for (const k in headers) headerMap[k.toLowerCase()] = headers[k];
-      }
-
-      extractFromHeaderMap(headerMap);
+      const hm = {};
+      const h = init.headers ?? {};
+      if (h instanceof Headers) h.forEach((v, k) => { hm[k.toLowerCase()] = v; });
+      else for (const k in h) hm[k.toLowerCase()] = h[k];
+      extractFromHeaderMap(hm);
     }
-
-    const response = await originalFetch.call(this, input, init);
-
+    const resp = await originalFetch.call(this, input, init);
     if (url.includes('fut.ea.com')) {
       try {
-        const pt = response.headers.get('X-UT-PHISHING-TOKEN');
-        if (pt) extractFromHeaderMap({ 'x-ut-phishing-token': pt });
+        const p = resp.headers.get('X-UT-PHISHING-TOKEN');
+        if (p) extractFromHeaderMap({ 'x-ut-phishing-token': p });
       } catch (_) {}
     }
-
-    return response;
+    return resp;
   };
 
-  window.addEventListener('message', (event) => {
+  // Fetch proxy: background sends request -> content executes -> returns response
+  // Service worker origin = chrome-extension://... -> EA blocks it.
+  // Content script origin = https://www.ea.com -> EA accepts it.
+  window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
+
     if (event.data?.type === '__FUT_SNIPER_REQUEST_TOKENS__') {
       broadcastTokens();
+      return;
+    }
+
+    if (event.data?.type === '__FUT_PROXY_REQUEST__') {
+      const { reqId, url, method, body } = event.data;
+      try {
+        const mergedHeaders = {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        };
+        if (vault.phishingToken) mergedHeaders['X-UT-PHISHING-TOKEN']          = vault.phishingToken;
+        if (vault.sid)           mergedHeaders['X-UT-SID']                     = vault.sid;
+        if (vault.nucleusId)     mergedHeaders['Easw-Session-Data-Nucleus-Id'] = vault.nucleusId;
+        if (vault.route)         mergedHeaders['X-UT-Route']                   = vault.route;
+
+        const fetchInit = { method: method ?? 'GET', headers: mergedHeaders };
+        if (body) fetchInit.body = body;
+
+        const resp = await originalFetch.call(window, url, fetchInit);
+
+        const newPT = resp.headers.get('X-UT-PHISHING-TOKEN');
+        if (newPT) { vault.phishingToken = newPT; broadcastTokens(); }
+
+        const respBody = await resp.text();
+        window.postMessage({
+          type: '__FUT_PROXY_RESPONSE__',
+          reqId,
+          status: resp.status,
+          ok: resp.ok,
+          body: respBody,
+          phishingToken: newPT ?? null,
+        }, '*');
+      } catch (err) {
+        window.postMessage({
+          type: '__FUT_PROXY_RESPONSE__',
+          reqId,
+          status: 0,
+          ok: false,
+          error: err.message,
+        }, '*');
+      }
     }
   });
 
