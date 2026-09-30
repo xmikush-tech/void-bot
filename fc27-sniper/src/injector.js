@@ -1,9 +1,10 @@
-// *injector.js — ISOLATED world bridge: postMessage <-> chrome.runtime relay*
-// Bidirectional: tokens content->background, proxy requests background->content->background.
+// *injector.js — ISOLATED world: bidirectional bridge content.js <-> background.js*
 
 'use strict';
 
-// content -> background: token relay
+const pendingProxies = new Map();
+
+// ── content.js → background.js ───────────────────────────────────────────────
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
 
@@ -18,15 +19,43 @@ window.addEventListener('message', (event) => {
     window.postMessage({ type: '__FUT_SNIPER_REQUEST_TOKENS__' }, '*');
   }
 
-  // forward proxy response back to background
+  // Proxy response: relay back to whichever proxyFetch call is waiting
   if (event.data?.type === '__FUT_PROXY_RESPONSE__') {
-    chrome.runtime.sendMessage({ type: 'FUT_PROXY_RESPONSE', payload: event.data }).catch(() => {});
+    const cb = pendingProxies.get(event.data.reqId);
+    if (cb) {
+      pendingProxies.delete(event.data.reqId);
+      cb(event.data);
+    }
   }
 });
 
-// background -> content: forward proxy requests into page
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'FUT_PROXY_REQUEST') {
-    window.postMessage({ type: '__FUT_PROXY_REQUEST__', ...msg.payload }, '*');
-  }
+// ── background.js → content.js ───────────────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type !== 'FUT_PROXY_REQUEST') return false;
+
+  const reqId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+  const timer = setTimeout(() => {
+    if (pendingProxies.has(reqId)) {
+      pendingProxies.delete(reqId);
+      sendResponse({ ok: false, status: 0, body: '', error: 'injector proxy timeout' });
+    }
+  }, 15000);
+
+  pendingProxies.set(reqId, (resp) => {
+    clearTimeout(timer);
+    sendResponse(resp);
+  });
+
+  // Explicit fields — never spread msg which would clobber type
+  window.postMessage({
+    type:            '__FUT_PROXY_REQUEST__',
+    reqId,
+    url:             msg.url,
+    method:          msg.method,
+    body:            msg.body,
+    overrideHeaders: msg.overrideHeaders,
+  }, '*');
+
+  return true; // async sendResponse
 });
